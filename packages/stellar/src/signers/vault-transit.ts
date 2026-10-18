@@ -1,5 +1,5 @@
 import { createPublicKey } from "node:crypto";
-import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { StrKey } from "@stellar/stellar-sdk";
 import type { ExternalSigner } from "../index";
 
 interface VaultTransitSignerOptions {
@@ -49,7 +49,8 @@ export class VaultTransitSigner implements ExternalSigner {
   }
 
   static async create(options: VaultTransitSignerOptions): Promise<VaultTransitSigner> {
-    const address = options.address.replace(/\/+$/, "");
+    let address = options.address;
+    while (address.endsWith("/")) address = address.slice(0, -1);
     if (!address || !options.token || !options.keyName) {
       throw new Error("Vault address, token, and Transit key name are required");
     }
