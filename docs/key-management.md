@@ -60,6 +60,13 @@ Vault Transit API fields and paths follow HashiCorp's
 `POST /v1/transit/sign/:name` accepts base64 `input` and returns a versioned
 `data.signature`.
 
+Two details worth knowing. The signer pins the key version it read the public key
+from and sends it as `key_version`, so rotating the Transit key (`vault write -f
+transit/keys/<name>/rotate`) does not silently change the signing key under a running
+process: signing keeps using the old version, and a response signed by another version
+is rejected. Restart the service to pick up the new key (and fund/authorise its new
+account first). A non-default Transit mount can be set with `VAULT_TRANSIT_MOUNT`.
+
 A KMS/HSM that supports ed25519 (e.g. AWS KMS, GCP KMS, HashiCorp Vault Transit,
 a YubiHSM) implements `ExternalSigner` by delegating `sign` to the vault:
 

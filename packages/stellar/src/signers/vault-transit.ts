@@ -6,6 +6,17 @@ interface VaultTransitSignerOptions {
   address: string;
   token: string;
   keyName: string;
+  /** Transit secrets-engine mount path. Defaults to `transit`. */
+  mount?: string;
+  /** Per-request timeout in milliseconds. Defaults to 10 000. */
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Encode each segment of a mount path (`team/transit`) but keep the slashes. */
+function encodeMount(mount: string): string {
+  return mount.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
 
 interface TransitKeyResponse {
@@ -29,6 +40,9 @@ export class VaultTransitSigner implements ExternalSigner {
     private readonly address: string,
     private readonly token: string,
     private readonly keyName: string,
+    private readonly mount: string,
+    private readonly keyVersion: number,
+    private readonly timeoutMs: number,
     publicKey: string,
   ) {
     this.publicKey = publicKey;
@@ -40,9 +54,11 @@ export class VaultTransitSigner implements ExternalSigner {
       throw new Error("Vault address, token, and Transit key name are required");
     }
 
+    const mount = encodeMount(options.mount ?? "transit");
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const response = await fetch(
-      `${address}/v1/transit/keys/${encodeURIComponent(options.keyName)}`,
-      { headers: { "X-Vault-Token": options.token } },
+      `${address}/v1/${mount}/keys/${encodeURIComponent(options.keyName)}`,
+      { headers: { "X-Vault-Token": options.token }, signal: AbortSignal.timeout(timeoutMs) },
     );
     if (!response.ok) throw new Error(`Vault Transit key lookup failed (${response.status})`);
 
@@ -57,7 +73,13 @@ export class VaultTransitSigner implements ExternalSigner {
       .filter(({ version }) => Number.isSafeInteger(version) && version > 0)
       .sort((a, b) => b.version - a.version);
     const latest = versions[0]?.value;
-    if (!latest || typeof latest !== "object" || !("public_key" in latest)) {
+    const keyVersion = versions[0]?.version;
+    if (
+      keyVersion === undefined ||
+      !latest ||
+      typeof latest !== "object" ||
+      !("public_key" in latest)
+    ) {
       throw new Error("Vault Transit key response is missing its public key");
     }
     const pem = (latest as { public_key?: unknown }).public_key;
@@ -74,22 +96,37 @@ export class VaultTransitSigner implements ExternalSigner {
     }
 
     const publicKey = StrKey.encodeEd25519PublicKey(der.subarray(ed25519SpkiPrefix.length));
-    return new VaultTransitSigner(address, options.token, options.keyName, publicKey);
+    return new VaultTransitSigner(
+      address,
+      options.token,
+      options.keyName,
+      mount,
+      keyVersion,
+      timeoutMs,
+      publicKey,
+    );
   }
 
   async sign(data: Uint8Array): Promise<Uint8Array> {
     if (data.byteLength !== 32)
       throw new Error("VaultTransitSigner expects a 32-byte Stellar hash");
 
+    // Pin the key version the public key was read from. Without `key_version`
+    // Vault signs with the LATEST version, so a rotation after startup would
+    // silently produce signatures from a key that is not `publicKey`.
     const response = await fetch(
-      `${this.address}/v1/transit/sign/${encodeURIComponent(this.keyName)}`,
+      `${this.address}/v1/${this.mount}/sign/${encodeURIComponent(this.keyName)}`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Vault-Token": this.token,
         },
-        body: JSON.stringify({ input: Buffer.from(data).toString("base64") }),
+        body: JSON.stringify({
+          input: Buffer.from(data).toString("base64"),
+          key_version: this.keyVersion,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       },
     );
     if (!response.ok) throw new Error(`Vault Transit signing failed (${response.status})`);
@@ -99,10 +136,15 @@ export class VaultTransitSigner implements ExternalSigner {
     if (typeof signature !== "string") {
       throw new Error("Vault Transit response is missing its signature");
     }
-    const match = /^vault:v\d+:([A-Za-z0-9+/]+={0,2})$/.exec(signature);
+    const match = /^vault:v(\d+):([A-Za-z0-9+/]+={0,2})$/.exec(signature);
     if (!match) throw new Error("Vault Transit returned a malformed versioned signature");
+    if (Number(match[1]) !== this.keyVersion) {
+      throw new Error(
+        `Vault Transit signed with key version ${match[1]}, expected ${this.keyVersion}`,
+      );
+    }
 
-    const bytes = Buffer.from(match[1], "base64");
+    const bytes = Buffer.from(match[2], "base64");
     if (bytes.length !== 64) throw new Error("Vault Transit returned a non-ed25519 signature");
     return bytes;
   }

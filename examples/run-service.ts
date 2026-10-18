@@ -10,6 +10,7 @@
 //
 //   CORRIDOR_SIGNER=local                 # default; requires CORRIDOR_SIGNER_SECRET
 //   CORRIDOR_SIGNER=vault                 # requires VAULT_ADDR, VAULT_TOKEN, VAULT_TRANSIT_KEY
+//                                         # (optional VAULT_TRANSIT_MOUNT, default "transit")
 //   CORRIDOR_SIGNER_SECRET=S...           # local signer only
 //   HORIZON_URL=https://horizon-testnet.stellar.org
 //   PORT=8080
@@ -189,6 +190,7 @@ async function main(): Promise<void> {
       address: env("VAULT_ADDR"),
       token: env("VAULT_TOKEN"),
       keyName: env("VAULT_TRANSIT_KEY"),
+      mount: process.env.VAULT_TRANSIT_MOUNT,
     });
   } else if (signerKind === "local") {
     signer = LocalKeypairSigner.fromSecret(env("CORRIDOR_SIGNER_SECRET"));
