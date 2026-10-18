@@ -8,7 +8,9 @@
 // Serves every corridor manifest found in CORRIDORS_DIR (default: corridors/),
 // not just one.
 //
-//   CORRIDOR_SIGNER_SECRET=S...
+//   CORRIDOR_SIGNER=local                 # default; requires CORRIDOR_SIGNER_SECRET
+//   CORRIDOR_SIGNER=vault                 # requires VAULT_ADDR, VAULT_TOKEN, VAULT_TRANSIT_KEY
+//   CORRIDOR_SIGNER_SECRET=S...           # local signer only
 //   HORIZON_URL=https://horizon-testnet.stellar.org
 //   PORT=8080
 //   DATABASE_URL=postgres://...        # optional; falls back to in-memory
@@ -32,9 +34,12 @@ import { loadCorridor, type Corridor } from "@corridor/manifest";
 import { StaticRouteResolver } from "@corridor/router";
 import { Sep31Adapter } from "@corridor/sep31";
 import {
+  assertSignerProducesValidSignatures,
   LocalKeypairSigner,
   StellarSep10Signer,
   StellarSettlementSubmitter,
+  VaultTransitSigner,
+  type ExternalSigner,
 } from "@corridor/stellar";
 import {
   InMemoryAuditLog,
@@ -107,7 +112,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const signer = LocalKeypairSigner.fromSecret(env("CORRIDOR_SIGNER_SECRET"));
+  const signerKind = process.env.CORRIDOR_SIGNER ?? "local";
+  let signer: ExternalSigner;
+  if (signerKind === "vault") {
+    signer = await VaultTransitSigner.create({
+      address: env("VAULT_ADDR"),
+      token: env("VAULT_TOKEN"),
+      keyName: env("VAULT_TRANSIT_KEY"),
+    });
+  } else if (signerKind === "local") {
+    signer = LocalKeypairSigner.fromSecret(env("CORRIDOR_SIGNER_SECRET"));
+  } else {
+    throw new Error(`unsupported CORRIDOR_SIGNER value: ${signerKind}`);
+  }
+  await assertSignerProducesValidSignatures(signer);
+  console.log(`• signer: ${signerKind} (${signer.publicKey})`);
   const horizonUrl = env("HORIZON_URL", "https://horizon-testnet.stellar.org");
   const sep10 = new StellarSep10Signer(signer);
   const submitter = new StellarSettlementSubmitter({ signer, horizonUrl });
