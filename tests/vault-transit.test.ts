@@ -44,7 +44,9 @@ async function withVaultStub(
     if (request.method === "POST" && request.url === `/v1/${mount}/sign/stellar`) {
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { input: string };
       bodies.push(payload);
-      const signature = keypair.sign(Buffer.from(payload.input, "base64")).toString("base64");
+      const signature = Buffer.from(
+        keypair.sign(Buffer.from(payload.input, "base64")),
+      ).toString("base64");
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(
         JSON.stringify({
